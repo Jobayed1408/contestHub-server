@@ -222,6 +222,7 @@ async function run() {
       contest.status = 'pending';
       contest.createdAt = new Date();
       contest.trackingId = trackingId;
+      constest.participants = 0;
 
       logTracking(trackingId, 'contest_created');
 
