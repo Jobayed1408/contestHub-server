@@ -340,36 +340,99 @@ async function run() {
     // -------------------- PAYMENTS --------------------
 
 
-    // payment related apis
-    app.post('/payment-checkout-session', async (req, res) => {
-      const contestInfo = req.body;
-      console.log(contestInfo) 
-      const amount = parseInt(contestInfo.cost) * 100;
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: 'usd',
-              unit_amount: amount,
-              contest_data: {
-                name: `Please pay for: ${contestInfo.contestName}`
-              }
+    app.post("/payment-checkout-session", async (req, res) => {
+      try {
+        const {
+          price,
+          contestId,
+          contestName,
+          contestCreatorEmail,
+          participantEmail,
+          trackingId
+        } = req.body;
+
+        if (!price || !contestId || !participantEmail) {
+          return res.status(400).send({ message: "Missing required fields" });
+        }
+
+        const amount = parseInt(price) * 100; // cents
+
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                unit_amount: amount,
+                product_data: {
+                  name: `Contest: ${contestName}`,
+                },
+              },
+              quantity: 1,
             },
-            quantity: 1,
+          ],
+          mode: "payment",
+          metadata: {
+            contestId,
+            contestName,
+            trackingId,
+            contestCreatorEmail,
           },
-        ],
-        mode: 'payment', 
-        metadata: {
-          contestId: contestInfo.contestId,  
-          trackingId: contestInfo.trackingId
-        },
-        customer_email: contestInfo.creatorEmail, 
-        success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`, 
-      })
-      console.log(contestInfo)
-      res.send({ url: session.url })
-    })
+          customer_email: participantEmail, // autofill Stripe email
+          success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+        });
+
+        res.send({ url: session.url });
+      } catch (error) {
+        console.error("Stripe session error:", error);
+        res.status(500).send({ message: "Stripe session failed", error });
+      }
+    });
+
+
+    app.patch("/payment-success", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        if (!sessionId) return res.status(400).send({ message: "Session ID missing" });
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (!session) return res.status(404).send({ message: "Invalid session" });
+
+        const {
+          contestId,
+          contestName,
+          trackingId,
+          contestCreatorEmail
+        } = session.metadata;
+
+        const participantEmail = session.customer_email;
+
+        const paymentInfo = {
+          sessionId,
+          contestId,
+          contestName,
+          contestCreatorEmail,
+          trackingId,
+          participantEmail,
+          amountPaid: session.amount_total / 100,
+          status: session.payment_status, // "paid"
+          createdAt: new Date(),
+        };
+
+        const result = await paymentsCollection.insertOne(paymentInfo);
+
+        res.send({
+          success: true,
+          message: "Payment verified successfully",
+          paymentInfo,
+          result,
+        });
+      } catch (error) {
+        console.error("Payment verification error:", error);
+        res.status(500).send({ message: "Server error", error });
+      }
+    });
 
 
 
