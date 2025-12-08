@@ -8,6 +8,7 @@ require('dotenv').config()
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const crypto = require("crypto");
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
 const port = process.env.PORT || 3000
 
@@ -95,23 +96,23 @@ async function run() {
     app.get("/contests", async (req, res) => {
       try {
         const status = req.query.status; // read ?status=confirmed
-    
+
         let query = {};
-    
+
         // If status exists, filter by it
         if (status) {
           query.status = status;
         }
-    
+
         const result = await contestsCollection.find(query).toArray();
         res.send(result);
-    
+
       } catch (error) {
         console.log(error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
-    
+
 
     app.get("/contests/creator/:email", async (req, res) => {
       try {
@@ -216,13 +217,14 @@ async function run() {
     //   Insert contest in db
     app.post('/contest', async (req, res) => {
       const contest = req.body;
-      console.log("Received body:", contest);
+
       const trackingId = generateTrackingId();
       // contest created time
       contest.status = 'pending';
       contest.createdAt = new Date();
       contest.trackingId = trackingId;
-      constest.participants = 0;
+      contest.participants = 0;
+      console.log("Received body:", contest);
 
       logTracking(trackingId, 'contest_created');
 
@@ -317,6 +319,10 @@ async function run() {
     app.get('/users/:email', async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
+      if (!user) {
+        return res.send('User not found!');
+      }
+      console.log('user', user)
       res.send(user);
     });
 
@@ -333,6 +339,37 @@ async function run() {
 
     // -------------------- PAYMENTS --------------------
 
+
+    // payment related apis
+    app.post('/payment-checkout-session', async (req, res) => {
+      const contestInfo = req.body;
+      console.log(contestInfo) 
+      const amount = parseInt(contestInfo.cost) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              unit_amount: amount,
+              contest_data: {
+                name: `Please pay for: ${contestInfo.contestName}`
+              }
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment', 
+        metadata: {
+          contestId: contestInfo.contestId,  
+          trackingId: contestInfo.trackingId
+        },
+        customer_email: contestInfo.creatorEmail, 
+        success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`, 
+      })
+      console.log(contestInfo)
+      res.send({ url: session.url })
+    })
 
 
 
