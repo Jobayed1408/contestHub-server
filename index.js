@@ -175,7 +175,7 @@ async function run() {
         const result = await paymentsCollection
           .find({ participantEmail: email })
           .toArray();
-        console.log('user contests=> ',result) 
+        console.log('user contests=> ', result)
         res.send(result);
       } catch (error) {
         console.error("Error fetching creator contests:", error);
@@ -366,9 +366,25 @@ async function run() {
     // -------------------- PAYMENTS --------------------
 
 
+    app.get("/payment-status", async (req, res) => {
+      try {
+        const { contestId, email } = req.query;
+
+        const exists = await paymentsCollection.findOne({
+          contestId,
+          participantEmail: email
+        });
+
+        res.send({ alreadyPaid: !!exists });
+      } catch (error) {
+        res.status(500).send({ message: "Error checking payment", error });
+      }
+    });
+
+
     app.post("/payment-checkout-session", async (req, res) => {
       try {
-         console.log("Payment body", req.body)
+        //  console.log("Payment body", req.body)
         const {
           price,
           contestId,
@@ -407,7 +423,7 @@ async function run() {
             contestName,
             trackingId,
             contestCreatorEmail,
-            deadline, 
+            deadline,
             participants
           },
           customer_email: participantEmail, // autofill Stripe email
@@ -456,11 +472,15 @@ async function run() {
           createdAt: new Date(),
         };
 
-        const existingPayment = await paymentsCollection.findOne({ sessionId });
+        const existingPayment = await paymentsCollection.findOne({
+          participantEmail: participantEmail,
+          contestId: contestId
+        })
+          ;
         if (existingPayment) {
           return res.send({
             success: true,
-            message: 'Payment already processed',
+            message: 'Payment already processed. No need to pay again',
             paymentInfo: existingPayment
           });
         }
