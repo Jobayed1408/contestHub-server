@@ -165,11 +165,29 @@ async function run() {
       }
     });
 
+
+    // filter contests for user registration 
+    app.get("/user-contests", async (req, res) => {
+      try {
+        const email = req.query.email;
+        console.log(email)
+        if (!email) return res.status(400).send({ message: "Email is required" });
+        const result = await paymentsCollection
+          .find({ participantEmail: email })
+          .toArray();
+        console.log('user contests=> ',result) 
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching creator contests:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
     // change status by admin 
     app.patch(`/contest/changeStatus/:id`, async (req, res) => {
       try {
         const id = req.params.id;
-        console.log(req.body)
+        // console.log(req.body)
 
         const filter = {
           _id: new ObjectId(id),
@@ -193,19 +211,27 @@ async function run() {
     // Update already existed data 
     app.patch(`/contest/:id`, async (req, res) => {
       try {
-        const id = req.params.id;
+        const { id } = req.params;
+        const updateData = req.body;
 
-        const filter = {
-          _id: new ObjectId(id),
-        }
+        // Only update allowed fields, not participants
+        const allowedFields = [
+          'name', 'description', 'price', 'deadline',
+          'image', 'contestType', 'taskInstruction',
+          'prizeMoney', 'status'
+        ];
 
-        const updateDoc = { $set: req.body };
-        const result = await contestsCollection.updateOne(filter, updateDoc);
+        const updateObj = {};
+        allowedFields.forEach(field => {
+          if (updateData[field] !== undefined) updateObj[field] = updateData[field];
+        });
 
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ message: "Contest not found" });
-        }
-        res.send(result)
+        const result = await contestsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateObj }
+        );
+
+        res.send(result);
 
       } catch (error) {
         console.error("Error updating contests:", error);
@@ -342,14 +368,18 @@ async function run() {
 
     app.post("/payment-checkout-session", async (req, res) => {
       try {
+         console.log("Payment body", req.body)
         const {
           price,
           contestId,
           contestName,
           contestCreatorEmail,
           participantEmail,
-          trackingId
+          trackingId,
+          deadline,
+          participants
         } = req.body;
+        // console.log("Payment body", req.body)
 
         if (!price || !contestId || !participantEmail) {
           return res.status(400).send({ message: "Missing required fields" });
@@ -377,6 +407,8 @@ async function run() {
             contestName,
             trackingId,
             contestCreatorEmail,
+            deadline, 
+            participants
           },
           customer_email: participantEmail, // autofill Stripe email
           success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
@@ -403,7 +435,9 @@ async function run() {
           contestId,
           contestName,
           trackingId,
-          contestCreatorEmail
+          contestCreatorEmail,
+          deadline,
+          participants
         } = session.metadata;
 
         const participantEmail = session.customer_email;
@@ -415,12 +449,30 @@ async function run() {
           contestCreatorEmail,
           trackingId,
           participantEmail,
+          deadline,
+          participants,
           amountPaid: session.amount_total / 100,
           status: session.payment_status, // "paid"
           createdAt: new Date(),
         };
 
+        const existingPayment = await paymentsCollection.findOne({ sessionId });
+        if (existingPayment) {
+          return res.send({
+            success: true,
+            message: 'Payment already processed',
+            paymentInfo: existingPayment
+          });
+        }
+        console.log('paymentInfo update', paymentInfo)
         const result = await paymentsCollection.insertOne(paymentInfo);
+
+        // Increment participants count
+        await contestsCollection.updateOne(
+          { _id: new ObjectId(contestId) },
+          { $inc: { participants: 1 } }
+        );
+
 
         res.send({
           success: true,
