@@ -12,9 +12,9 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
 const port = process.env.PORT || 3000
 
-var admin = require("firebase-admin");
+const admin = require("firebase-admin");
 
-var serviceAccount = require("./serviceAccountKey.json");
+const serviceAccount = require("./serviceAccountKey.json");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
@@ -32,25 +32,41 @@ function generateTrackingId() {
   return `${prefix}-${date}-${random}`;
 }
 
+// const jwt = require("serviceAccount");
+
+// app.post("/jwt", (req, res) => {
+//   const user = req.body; // { email }
+//   const token = jwt.sign(user, process.env.JWT_SECRET, {
+//     expiresIn: "7d",
+//   });
+//   res.send({ token });
+// });
+
+
+
 const verifyFBToken = async (req, res, next) => {
-  const token = req.headers.authorization;
-  console.log(token)
-
-  if (!token) {
-    return res.status(401).send({ message: 'unauthorized access' })
-  }
-
   try {
-    const idToken = token.split(' ')[1];
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    console.log('decoded in the token', decoded);
-    req.decoded_email = decoded.email;
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).send({ message: "Unauthorized Access" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    const decodedToken = await admin.auth().verifyIdToken(token);
+
+    req.decoded = decodedToken; // 🔥 THIS LINE IS CRITICAL
+    // console.log("DECODED TOKEN:", decodedToken.email);
+
     next();
+  } catch (error) {
+    console.error("verifyFBToken error:", error.message);
+    return res.status(401).send({ message: "Unauthorized Access" });
   }
-  catch (err) {
-    return res.status(401).send({ message: 'unauthorized access' })
-  }
-}
+};
+
+
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@databasecluster.zcna5ev.mongodb.net/?appName=DatabaseCluster`;
 
@@ -77,6 +93,49 @@ async function run() {
     const tasksCollection = db.collection('tasks');
 
 
+
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        if (!req.decoded?.email) {
+          return res.status(401).send({ message: "Unauthorized Access" });
+        }
+
+        const email = req.decoded.email;
+        const user = await usersCollection.findOne({ email });
+
+        if (!user || user.role !== "admin") {
+          return res.status(403).send({ message: "Forbidden Access" });
+        }
+
+        // console.log("ADMIN CHECK EMAIL:", req.decoded?.email);
+        next();
+      } catch (error) {
+        console.error("Verify Admin Error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    };
+
+    const verifyCreator = async (req, res, next) => {
+      try {
+        if (!req.decoded?.email) {
+          return res.status(401).send({ message: "Unauthorized Access" });
+        }
+
+        const email = req.decoded.email;
+        const user = await usersCollection.findOne({ email });
+
+        if (!user || user.role !== "creator") {
+          return res.status(403).send({ message: "Forbidden Access" });
+        }
+
+        next();
+      } catch (error) {
+        console.error("Verify Admin Error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    };
+
+
     const logTracking = async (trackingId, status) => {
       const log = {
         trackingId,
@@ -94,40 +153,61 @@ async function run() {
 
     app.get("/contests", async (req, res) => {
       try {
-        const status = req.query.status; 
+        const status = req.query.status;
         const contestType = req.query.type;
-
+    
+        // 🆕 pagination (optional)
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 0; // 0 = no pagination (old behavior)
+        const skip = limit ? (page - 1) * limit : 0;
+    
         let query = {};
-
+    
         if (status) {
           query.status = status;
         }
-        if (contestType) query.contestType = { $regex: contestType, $options: "i" };
-
-        // Sort by participants length (descending)
-        const result = await contestsCollection
-          .find(query)
-          .sort({ participants: -1 }) 
-          .toArray();
-
-        // If participants is an array, sort manually by length
-        const sortedResult = result.sort((a, b) => (b.participants?.length || 0) - (a.participants?.length || 0));
-
-        res.send(sortedResult);
-
+    
+        if (contestType) {
+          query.contestType = { $regex: contestType, $options: "i" };
+        }
+    
+        // 🟢 SAME FIND LOGIC
+        let result = await contestsCollection.find(query).toArray();
+    
+        // 🟢 SAFE SORTING (does NOT affect filters)
+        result = result.sort((a, b) => {
+          // 1️⃣ pending first
+          if (a.status === "pending" && b.status !== "pending") return -1;
+          if (a.status !== "pending" && b.status === "pending") return 1;
+    
+          // 2️⃣ confirmed next
+          if (a.status === "confirmed" && b.status !== "confirmed") return -1;
+          if (a.status !== "confirmed" && b.status === "confirmed") return 1;
+    
+          // 3️⃣ newest first
+          return new Date(b.createdAt) - new Date(a.createdAt);
+        });
+    
+        // 🆕 pagination applied AFTER sorting
+        if (limit) {
+          result = result.slice(skip, skip + limit);
+        }
+    
+        // 🟢 SAME RESPONSE FORMAT (array)
+        res.send(result);
+    
       } catch (error) {
-        console.log(error);
+        console.error(error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
-
-
+    
 
     app.get("/contests/creator/:email", async (req, res) => {
       try {
         const email = req.params.email;
 
-        console.log('find contest')
+        // console.log('find contest')
         const contests = await contestsCollection
           .find({ creatorEmail: email })
           .toArray();
@@ -139,8 +219,25 @@ async function run() {
       }
     });
 
+    app.get("/contest/single/:id", verifyFBToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!contest) {
+          return res.status(404).send({ message: "Contest not found" });
+        }
+
+        res.send(contest);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+
     // GET /contests/:contestId/submissions
-    app.get("/contests/:contestId/submissions", async (req, res) => {
+    app.get("/contests/:contestId/submissions", verifyFBToken, async (req, res) => {
       const { contestId } = req.params;
       console.log('find contest submission')
       const submissions = await tasksCollection
@@ -150,10 +247,11 @@ async function run() {
     });
 
     // PATCH /contests/:contestId/winner
-    app.patch("/contests/:contestId/winner", async (req, res) => {
+    app.patch("/contests/:contestId/winner", verifyFBToken, async (req, res) => {
       const { contestId } = req.params;
       const { winnerId } = req.body;
 
+      console.log("Winner id: ", winnerId, contestId)
       // Remove previous winner if exists
       await tasksCollection.updateMany(
         { contestId },
@@ -162,17 +260,17 @@ async function run() {
 
       // Set new winner
       const result = await tasksCollection.updateOne(
-        { id: winnerId },
+        { _id: new ObjectId(winnerId) },
         { $set: { isWinner: true } }
       );
-      console.log('update contest submission')
+      console.log('update contest submission', result)
 
       res.send(result);
     });
 
 
     //   Filter by id
-    app.get("/contest/:id", async (req, res) => {
+    app.get("/contest/:id", verifyFBToken,  async (req, res) => {
       try {
         const id = req.params.id;
         // console.log('id', id)
@@ -194,7 +292,7 @@ async function run() {
 
 
     // filter by creator email 
-    app.get("/my-contests/:email", async (req, res) => {
+    app.get("/my-contests/:email", verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
         const result = await contestsCollection
@@ -210,7 +308,7 @@ async function run() {
 
 
     // filter contests for user registration 
-    app.get("/user-contests", async (req, res) => {
+    app.get("/user-contests", verifyFBToken, async (req, res) => {
       try {
         const email = req.query.email;
         // console.log(email)
@@ -227,32 +325,36 @@ async function run() {
     });
 
     // change status by admin 
-    app.patch(`/contest/changeStatus/:id`, async (req, res) => {
-      try {
-        const id = req.params.id;
-        // console.log(req.body)
+    app.patch("/contest/changeStatus/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
 
-        const filter = {
-          _id: new ObjectId(id),
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid Contest ID" });
+          }
+
+          const filter = { _id: new ObjectId(id) };
+          const updateDoc = { $set: req.body };
+
+          const result = await contestsCollection.updateOne(filter, updateDoc);
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "Contest not found" });
+          }
+
+          res.send(result);
+        } catch (error) {
+          console.error("Error updating contests:", error);
+          res.status(500).send({ message: "Internal Server Error" });
         }
-
-
-        const updateDoc = { $set: req.body };
-        const result = await contestsCollection.updateOne(filter, updateDoc);
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ message: "Contest not found" });
-        }
-        res.send(result)
-
-      } catch (error) {
-        console.error("Error updating contests:", error);
-        res.status(500).send({ message: "Internal Server Error" });
       }
-    })
+    );
 
     // Update already existed data 
-    app.patch(`/contest/:id`, async (req, res) => {
+    app.patch(`/contest/:id`, verifyFBToken, async (req, res) => {
       try {
         const { id } = req.params;
         const updateData = req.body;
@@ -284,7 +386,7 @@ async function run() {
 
 
     //   Insert contest in db
-    app.post('/contest', async (req, res) => {
+    app.post('/contest', verifyFBToken, async (req, res) => {
       const contest = req.body;
 
       const trackingId = generateTrackingId();
@@ -293,7 +395,7 @@ async function run() {
       contest.createdAt = new Date();
       contest.trackingId = trackingId;
       contest.participants = 0;
-      console.log("Received body:", contest);
+      // console.log("Received body:", contest);
 
       logTracking(trackingId, 'contest_created');
 
@@ -302,7 +404,7 @@ async function run() {
     })
 
     // delete one contests from db using id
-    app.delete("/contest/:id", async (req, res) => {
+    app.delete("/contest/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         // console.log(id)
@@ -336,7 +438,7 @@ async function run() {
     // Update user role (admin only)
 
     // Get single user by email 5
-    app.get('/users/:email', async (req, res) => {
+    app.get('/users/:email', verifyFBToken, async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       if (!user) {
@@ -347,7 +449,7 @@ async function run() {
     });
 
     // See user role (admin only) 
-    app.get('/users/role/:email', async (req, res) => {
+    app.get('/users/role/:email', verifyFBToken, async (req, res) => {
       const email = req.params.email;
       const query = { email };
       const user = await usersCollection.findOne(query);
@@ -355,7 +457,7 @@ async function run() {
     });
 
 
-    app.patch('/users/role/:email', async (req, res) => {
+    app.patch('/users/role/:email', verifyFBToken, async (req, res) => {
       // console.log("PATCH /users/role HIT");
       // console.log("Params:", req.params);
       // console.log("Body:", req.body);
@@ -399,7 +501,7 @@ async function run() {
     });
 
 
-    app.patch('/users/:email', async (req, res) => {
+    app.patch('/users/:email', verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
         const data = req.body;
@@ -439,15 +541,14 @@ async function run() {
 
     // Delete user (admin only) 6
 
-    app.delete('/users/:email', async (req, res) => {
+    app.delete('/users/:email', verifyFBToken, async (req, res) => {
       const email = req.params.email;
       const result = await usersCollection.deleteOne({ email });
       res.send(result);
     });
 
-
     // -------------------- TASKS ROUTES --------------------
-    app.post("/submit-task", async (req, res) => {
+    app.post("/submit-task", verifyFBToken, async (req, res) => {
       try {
         const { contestId, participantEmail, taskText } = req.body;
 
@@ -487,12 +588,36 @@ async function run() {
     });
 
     // Get all tasks for a specific user
-    app.get("/tasks/:email", async (req, res) => {
+    app.get("/tasks/:email", verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
 
         const userTasks = await tasksCollection
-          .find({ participantEmail: email })
+          .find(
+            {
+              participantEmail: email,
+              isWinner: true
+            }
+          )
+          .toArray();
+
+        res.send(userTasks);
+      } catch (error) {
+        console.error("Error fetching user tasks:", error);
+        res.status(500).send({ message: "Failed to fetch tasks", error });
+      }
+    });
+
+    app.get("/user-all-tasks/:email", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        const userTasks = await tasksCollection
+          .find(
+            {
+              participantEmail: email,
+            }
+          )
           .toArray();
 
         res.send(userTasks);
@@ -506,14 +631,14 @@ async function run() {
     app.get("/winners", async (req, res) => {
       try {
         const limit = parseInt(req.query.limit) || 5;
-    
+
         // 1. Find winner tasks
         const winnerTasks = await tasksCollection
           .find({ isWinner: true })
           .sort({ submittedAt: -1 })
           .limit(limit)
           .toArray();
-    
+
         // 2. Map over winners to attach user and contest info
         const winnersWithDetails = await Promise.all(
           winnerTasks.map(async (task) => {
@@ -534,14 +659,14 @@ async function run() {
             };
           })
         );
-        
+
         res.send(winnersWithDetails);
       } catch (error) {
         console.log("Error fetching winners:", error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
-    
+
 
 
 
@@ -552,7 +677,7 @@ async function run() {
     // -------------------- PAYMENTS --------------------
 
 
-    app.get("/payment-status", async (req, res) => {
+    app.get("/payment-status", verifyFBToken, async (req, res) => {
       try {
         const { contestId, email } = req.query;
         // console.log(req.query)
@@ -629,7 +754,7 @@ async function run() {
     });
 
 
-    app.patch("/payment-success", async (req, res) => {
+    app.patch("/payment-success", verifyFBToken, async (req, res) => {
       try {
         const sessionId = req.query.session_id;
         if (!sessionId) return res.status(400).send({ message: "Session ID missing" });
