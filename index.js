@@ -156,44 +156,43 @@ async function run() {
         const status = req.query.status;
         const contestType = req.query.type;
     
-        // 🆕 pagination (optional)
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 0; // 0 = no pagination (old behavior)
-        const skip = limit ? (page - 1) * limit : 0;
+        // pagination (optional)
+        const page = parseInt(req.query.page);
+        const limit = parseInt(req.query.limit);
+        const usePagination = page && limit;
     
         let query = {};
     
-        if (status) {
-          query.status = status;
-        }
-    
+        if (status) query.status = status;
         if (contestType) {
           query.contestType = { $regex: contestType, $options: "i" };
         }
     
-        // 🟢 SAME FIND LOGIC
+        // fetch ALL matching data (old logic preserved)
         let result = await contestsCollection.find(query).toArray();
     
-        // 🟢 SAFE SORTING (does NOT affect filters)
-        result = result.sort((a, b) => {
+        // 🟢 sorting (unchanged logic)
+        result.sort((a, b) => {
           // 1️⃣ pending first
           if (a.status === "pending" && b.status !== "pending") return -1;
           if (a.status !== "pending" && b.status === "pending") return 1;
     
-          // 2️⃣ confirmed next
           if (a.status === "confirmed" && b.status !== "confirmed") return -1;
           if (a.status !== "confirmed" && b.status === "confirmed") return 1;
     
-          // 3️⃣ newest first
           return new Date(b.createdAt) - new Date(a.createdAt);
         });
     
-        // 🆕 pagination applied AFTER sorting
-        if (limit) {
-          result = result.slice(skip, skip + limit);
+        // 🆕 pagination logic
+        if (usePagination) {
+          const total = result.length;
+          const start = (page - 1) * limit;
+          const data = result.slice(start, start + limit);
+    
+          return res.send({ data, total });
         }
     
-        // 🟢 SAME RESPONSE FORMAT (array)
+        // 🟢 old response (no pagination)
         res.send(result);
     
       } catch (error) {
@@ -201,6 +200,7 @@ async function run() {
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
+    
     
 
     app.get("/contests/creator/:email", async (req, res) => {
@@ -386,7 +386,7 @@ async function run() {
 
 
     //   Insert contest in db
-    app.post('/contest', verifyFBToken, async (req, res) => {
+    app.post('/contest', async (req, res) => {
       const contest = req.body;
 
       const trackingId = generateTrackingId();
@@ -628,7 +628,7 @@ async function run() {
     });
 
     // Get recent winners
-    app.get("/winners", async (req, res) => {
+    app.get("/winners",  async (req, res) => {
       try {
         const limit = parseInt(req.query.limit) || 5;
 
