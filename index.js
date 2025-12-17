@@ -135,7 +135,6 @@ async function run() {
       }
     };
 
-
     const logTracking = async (trackingId, status) => {
       const log = {
         trackingId,
@@ -147,7 +146,6 @@ async function run() {
       return result;
     }
 
-
     // -------------------- CONTESTS CODE --------------------
 
 
@@ -155,53 +153,69 @@ async function run() {
       try {
         const status = req.query.status;
         const contestType = req.query.type;
-    
+
         // pagination (optional)
         const page = parseInt(req.query.page);
         const limit = parseInt(req.query.limit);
         const usePagination = page && limit;
-    
+
         let query = {};
-    
+
         if (status) query.status = status;
         if (contestType) {
           query.contestType = { $regex: contestType, $options: "i" };
         }
-    
-        // fetch ALL matching data (old logic preserved)
+
         let result = await contestsCollection.find(query).toArray();
-    
-        // 🟢 sorting (unchanged logic)
+
         result.sort((a, b) => {
-          // 1️⃣ pending first
           if (a.status === "pending" && b.status !== "pending") return -1;
           if (a.status !== "pending" && b.status === "pending") return 1;
-    
+
           if (a.status === "confirmed" && b.status !== "confirmed") return -1;
           if (a.status !== "confirmed" && b.status === "confirmed") return 1;
-    
+
           return new Date(b.createdAt) - new Date(a.createdAt);
         });
-    
-        // 🆕 pagination logic
+
         if (usePagination) {
           const total = result.length;
           const start = (page - 1) * limit;
           const data = result.slice(start, start + limit);
-    
+
           return res.send({ data, total });
         }
-    
+
         // 🟢 old response (no pagination)
         res.send(result);
-    
+
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
-    
-    
+
+    app.get("/popular-contests", async (req, res) => {
+      try {
+        // Only fetch "confirmed" contests (usually popular sections don't show pending ones)
+        const result = await contestsCollection
+          .find({ status: "confirmed" })
+          .sort({
+            participants: -1,
+            createdAt: -1
+          }) // Sort at Database level (1 for asc, -1 for desc)
+          .limit(6) // Usually, you only want the top 5 or 6 for a "Popular" section
+          .toArray();
+
+        console.log('result', result)
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+
 
     app.get("/contests/creator/:email", async (req, res) => {
       try {
@@ -251,7 +265,21 @@ async function run() {
       const { contestId } = req.params;
       const { winnerId } = req.body;
 
-      console.log("Winner id: ", winnerId, contestId)
+      const task = await tasksCollection.findOne({ _id: new ObjectId(winnerId) });
+
+      const contest = await contestsCollection.findOne({
+        _id: new ObjectId(task.contestId)
+      });
+
+      const now = new Date();
+      const deadline = new Date(contest.deadline);
+
+      if (now < deadline) {
+        return res.status(400).send({
+          message: "Contest deadline not finished yet"
+        });
+      }
+
       // Remove previous winner if exists
       await tasksCollection.updateMany(
         { contestId },
@@ -263,14 +291,13 @@ async function run() {
         { _id: new ObjectId(winnerId) },
         { $set: { isWinner: true } }
       );
-      console.log('update contest submission', result)
 
       res.send(result);
     });
 
 
     //   Filter by id
-    app.get("/contest/:id", verifyFBToken,  async (req, res) => {
+    app.get("/contest/:id", verifyFBToken, async (req, res) => {
       try {
         const id = req.params.id;
         // console.log('id', id)
@@ -325,10 +352,7 @@ async function run() {
     });
 
     // change status by admin 
-    app.patch("/contest/changeStatus/:id",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
+    app.patch("/contest/changeStatus/:id", verifyFBToken, verifyAdmin, async (req, res) => {
         try {
           const { id } = req.params;
 
@@ -438,10 +462,10 @@ async function run() {
     // Update user role (admin only)
 
     // Get single user by email 5
-    app.get('/users/:email', verifyFBToken, async (req, res) => {
+    app.get('/users/:email',  async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
-      if (!user) {
+      if (!user) { 
         return res.send({});
       }
       // console.log('user', user)
@@ -453,6 +477,7 @@ async function run() {
       const email = req.params.email;
       const query = { email };
       const user = await usersCollection.findOne(query);
+      // console.log("User =",user)
       res.send({ role: user?.role });
     });
 
@@ -464,7 +489,7 @@ async function run() {
       const email = req.params.email;
       const { role } = req.body;
 
-      console.log("Email:", email, "New Role:", role);
+      // console.log("Email:", email, "New Role:", role);
 
       // 1. Find the user
       const user = await usersCollection.findOne({ email: email });
@@ -505,8 +530,6 @@ async function run() {
       try {
         const email = req.params.email;
         const data = req.body;
-
-        // console.log('body',data)
 
 
         const result = await usersCollection.updateOne(
@@ -600,7 +623,6 @@ async function run() {
             }
           )
           .toArray();
-
         res.send(userTasks);
       } catch (error) {
         console.error("Error fetching user tasks:", error);
@@ -628,9 +650,9 @@ async function run() {
     });
 
     // Get recent winners
-    app.get("/winners",  async (req, res) => {
+    app.get("/winners", async (req, res) => {
       try {
-        const limit = parseInt(req.query.limit) || 5;
+        const limit = parseInt(req.query.limit) || 3;
 
         // 1. Find winner tasks
         const winnerTasks = await tasksCollection
