@@ -16,12 +16,22 @@ const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString(
 )
 const serviceAccount = JSON.parse(decoded)
 
+const SITE_DOMAIN = process.env.SITE_DOMAIN
+
+
 admin.initializeApp({
 	credential: admin.credential.cert(serviceAccount),
 })
 
 app.use(express.json())
 app.use(cors())
+
+let usersCollection
+let contestsCollection
+let paymentsCollection
+let trackingsCollection
+let tasksCollection
+
 
 function generateTrackingId() {
 	const prefix = 'PRCL' // your brand prefix
@@ -62,811 +72,1020 @@ const client = new MongoClient(uri, {
 	},
 })
 
+
 async function run() {
 	try {
 		// await client.connect();
 
 		const db = client.db('gamify_collection_db')
 
-		const usersCollection = db.collection('users')
-		const contestsCollection = db.collection('contests')
-		const paymentsCollection = db.collection('payments')
-		const trackingsCollection = db.collection('trackings')
-		const tasksCollection = db.collection('tasks')
+		// const usersCollection = db.collection('users')
+		// const contestsCollection = db.collection('contests')
+		// const paymentsCollection = db.collection('payments')
+		// const trackingsCollection = db.collection('trackings')
+		// const tasksCollection = db.collection('tasks')
 
-		const verifyAdmin = async (req, res, next) => {
-			try {
-				if (!req.decoded?.email) {
-					return res.status(401).send({ message: 'Unauthorized Access' })
-				}
+		usersCollection = db.collection('users')
+		contestsCollection = db.collection('contests')
+		paymentsCollection = db.collection('payments')
+		trackingsCollection = db.collection('trackings')
+		tasksCollection = db.collection('tasks')
 
-				const email = req.decoded.email
-				const user = await usersCollection.findOne({ email })
+		console.log("Successfully connected to MongoDB!");
+	} catch (error) {
+		console.error("Failed to connect to MongoDB", error);
+	}
 
-				if (!user || user.role !== 'admin') {
-					return res.status(403).send({ message: 'Forbidden Access' })
-				}
-
-				// console.log("ADMIN CHECK EMAIL:", req.decoded?.email);
-				next()
-			} catch (error) {
-				console.error('Verify Admin Error:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
+	const verifyAdmin = async (req, res, next) => {
+		try {
+			if (!req.decoded?.email) {
+				return res.status(401).send({ message: 'Unauthorized Access' })
 			}
+
+			const email = req.decoded.email
+			const user = await usersCollection.findOne({ email })
+
+			if (!user || user.role !== 'admin') {
+				return res.status(403).send({ message: 'Forbidden Access' })
+			}
+
+			// console.log("ADMIN CHECK EMAIL:", req.decoded?.email);
+			next()
+		} catch (error) {
+			console.error('Verify Admin Error:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
 		}
+	}
 
-		const verifyCreator = async (req, res, next) => {
-			try {
-				if (!req.decoded?.email) {
-					return res.status(401).send({ message: 'Unauthorized Access' })
-				}
-
-				const email = req.decoded.email
-				const user = await usersCollection.findOne({ email })
-
-				if (!user || user.role !== 'creator') {
-					return res.status(403).send({ message: 'Forbidden Access' })
-				}
-
-				next()
-			} catch (error) {
-				console.error('Verify Admin Error:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
+	const verifyCreator = async (req, res, next) => {
+		try {
+			if (!req.decoded?.email) {
+				return res.status(401).send({ message: 'Unauthorized Access' })
 			}
+
+			const email = req.decoded.email
+			const user = await usersCollection.findOne({ email })
+
+			if (!user || user.role !== 'creator') {
+				return res.status(403).send({ message: 'Forbidden Access' })
+			}
+
+			next()
+		} catch (error) {
+			console.error('Verify Admin Error:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
 		}
+	}
 
-		const logTracking = async (trackingId, status) => {
-			const log = {
-				trackingId,
-				status,
-				details: status.split('_').join(' '),
-				createdAt: new Date(),
-			}
-			const result = await trackingsCollection.insertOne(log)
-			return result
+	const logTracking = async (trackingId, status) => {
+		const log = {
+			trackingId,
+			status,
+			details: status.split('_').join(' '),
+			createdAt: new Date(),
 		}
+		const result = await trackingsCollection.insertOne(log)
+		return result
+	}
 
-		// -------------------- CONTESTS CODE --------------------
+	// -------------------- CONTESTS CODE --------------------
 
-		app.get('/contests', async (req, res) => {
-			try {
-				const status = req.query.status
-				const contestType = req.query.type
 
-				// pagination (optional)
-				const page = parseInt(req.query.page)
-				const limit = parseInt(req.query.limit)
-				const usePagination = page && limit
+	app.get('/contests', async (req, res) => {
+		try {
+			const status = req.query.status
+			const contestType = req.query.type?.trim();
+			// pagination (optional)
+			const page = parseInt(req.query.page)
+			const limit = parseInt(req.query.limit)
+			const usePagination = page && limit
 
-				let query = {}
+			let query = {}
 
-				if (status) query.status = status
-				if (contestType) {
-					query.contestType = { $regex: contestType, $options: 'i' }
-				}
+			if (status) query.status = status
+			// if (contestType) {
+			// 	query.contestType = { $regex: contestType, $options: 'i' }
+			// }
 
-				let result = await contestsCollection.find(query).toArray()
+			if (contestType) {
+				query.$or = [
+					{ name: { $regex: contestType, $options: "i" } },
+					{ contestType: { $regex: contestType, $options: "i" } },
 
-				result.sort((a, b) => {
-					if (a.status === 'pending' && b.status !== 'pending') return -1
-					if (a.status !== 'pending' && b.status === 'pending') return 1
-
-					if (a.status === 'confirmed' && b.status !== 'confirmed') return -1
-					if (a.status !== 'confirmed' && b.status === 'confirmed') return 1
-
-					return new Date(b.createdAt) - new Date(a.createdAt)
-				})
-
-				if (usePagination) {
-					const total = result.length
-					const start = (page - 1) * limit
-					const data = result.slice(start, start + limit)
-
-					return res.send({ data, total })
-				}
-
-				res.send(result)
-			} catch (error) {
-				console.error(error)
-				res.status(500).send({ message: 'Internal Server Error' })
+				];
 			}
-		})
-
-		app.get('/popular-contests', async (req, res) => {
-			try {
-				// Only fetch "confirmed" contests (usually popular sections don't show pending ones)
-				const result = await contestsCollection
-					.find({ status: 'confirmed' })
-					.sort({
-						participants: -1,
-						createdAt: -1,
-					}) // Sort at Database level (1 for asc, -1 for desc)
-					.limit(6) // Usually, you only want the top 5 or 6 for a "Popular" section
-					.toArray()
-
-				console.log('result', result)
-				res.send(result)
-			} catch (error) {
-				console.error(error)
-				res.status(500).send({ message: 'Internal Server Error' })
+			else if (status) {
+				query.status = status;
 			}
-		})
 
-		app.get('/contests/creator/:email', async (req, res) => {
-			try {
-				const email = req.params.email
 
-				// console.log('find contest')
-				const contests = await contestsCollection
-					.find({ creatorEmail: email })
-					.toArray()
+			let result = await contestsCollection.find(query).toArray()
+			// console.log('query', result.length)
 
-				res.send(contests)
-			} catch (error) {
-				console.error('Error fetching creator contests:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
+			result.sort((a, b) => {
+				if (a.status === 'pending' && b.status !== 'pending') return -1
+				if (a.status !== 'pending' && b.status === 'pending') return 1
+
+				if (a.status === 'confirmed' && b.status !== 'confirmed') return -1
+				if (a.status !== 'confirmed' && b.status === 'confirmed') return 1
+
+				return new Date(b.createdAt) - new Date(a.createdAt)
+			})
+
+			if (usePagination) {
+				const total = result.length
+				const start = (page - 1) * limit
+				const data = result.slice(start, start + limit)
+
+				return res.send({ data, total })
 			}
-		})
 
-		app.get('/contest/single/:id', verifyFBToken, async (req, res) => {
-			try {
-				const id = req.params.id
-				const contest = await contestsCollection.findOne({
-					_id: new ObjectId(id),
-				})
+			res.send(result)
+		} catch (error) {
+			console.error(error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
 
-				if (!contest) {
-					return res.status(404).send({ message: 'Contest not found' })
-				}
+	app.get('/all-contests', async (req, res) => {
+		try {
+			const { search, category, minPrice, maxPrice, sort, page = 1, limit = 6 } = req.query;
+			const query = {};
 
-				res.send(contest)
-			} catch (error) {
-				console.log(error)
-				res.status(500).send({ message: 'Internal Server Error' })
+			// 1. Filtering Logic
+			if (search) query.contestName = { $regex: search, $options: 'i' };
+			if (category) query.category = category;
+			if (minPrice || maxPrice) {
+				query.prizeMoney = {};
+				if (minPrice) query.prizeMoney.$gte = parseInt(minPrice);
+				if (maxPrice) query.prizeMoney.$lte = parseInt(maxPrice);
 			}
-		})
 
-		// GET /contests/:contestId/submissions
-		app.get(
-			'/contests/:contestId/submissions',
-			verifyFBToken,
-			async (req, res) => {
+			// 2. Sorting Logic
+			let sortOptions = { createdAt: -1 }; // Default: Newest
+			if (sort === 'prize-asc') sortOptions = { prizeMoney: 1 };
+			if (sort === 'prize-desc') sortOptions = { prizeMoney: -1 };
+
+			// 3. Pagination Logic
+			const skip = (parseInt(page) - 1) * parseInt(limit);
+			const total = await contestsCollection.countDocuments(query);
+			const contests = await contestsCollection
+				.find(query)
+				.sort(sortOptions)
+				.skip(skip)
+				.limit(parseInt(limit))
+				.toArray();
+
+			res.send({ contests, total, totalPages: Math.ceil(total / limit) });
+		} catch (error) {
+			res.status(500).send({ message: "Error fetching contests" });
+		}
+	});
+
+	app.get("/contests/search", async (req, res) => {
+		try {
+			const queryText = req.query.query?.trim();
+
+			if (!queryText) {
+				return res.status(400).send({ message: "Search query is required" });
+			}
+
+			const query = {
+				$or: [
+					{ name: { $regex: queryText, $options: "i" } },
+					{ contestType: { $regex: queryText, $options: "i" } },
+				],
+			};
+
+			const results = await contestsCollection
+				.find(query)
+				.sort({ createdAt: -1 })
+				.toArray();
+
+			res.send(results);
+		} catch (error) {
+			console.error("Search error:", error);
+			res.status(500).send({ message: "Internal Server Error" });
+		}
+	});
+
+
+	app.get('/popular-contests', async (req, res) => {
+		try {
+			// Only fetch "confirmed" contests (usually popular sections don't show pending ones)
+			const result = await contestsCollection
+				.find({ status: 'confirmed' })
+				.sort({
+					participants: -1,
+					createdAt: -1,
+				}) // Sort at Database level (1 for asc, -1 for desc)
+				.limit(6) // Usually, you only want the top 5 or 6 for a "Popular" section
+				.toArray()
+
+			// console.log('result', result)
+			res.send(result)
+		} catch (error) {
+			console.error(error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	app.get('/contests/creator/:email', async (req, res) => {
+		try {
+			const email = req.params.email
+
+			// console.log('find contest')
+			const contests = await contestsCollection
+				.find({ creatorEmail: email })
+				.toArray()
+
+			res.send(contests)
+		} catch (error) {
+			console.error('Error fetching creator contests:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	// app.get('/contest/single/:id', verifyFBToken, async (req, res) => {
+	app.get('/contest/single/:id', async (req, res) => {
+		try {
+			const id = req.params.id
+			const contest = await contestsCollection.findOne({
+				_id: new ObjectId(id),
+			})
+
+			if (!contest) {
+				return res.status(404).send({ message: 'Contest not found' })
+			}
+
+			res.send(contest)
+		} catch (error) {
+			console.log(error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	// GET /contests/:contestId/submissions
+	app.get('/contests/:contestId/submissions',
+		verifyFBToken,
+		async (req, res) => {
+			const { contestId } = req.params
+			const submissions = await tasksCollection.find({ contestId }).toArray()
+			res.send(submissions)
+		},
+	)
+
+	app.patch('/contests/:contestId/winner',
+		verifyFBToken,
+		verifyCreator,
+		async (req, res) => {
+			try {
 				const { contestId } = req.params
-				const submissions = await tasksCollection.find({ contestId }).toArray()
-				res.send(submissions)
-			},
-		)
+				const { winnerId } = req.body // This is the ID from tasksCollection
 
-		app.patch(
-			'/contests/:contestId/winner',
-			verifyFBToken,
-			verifyCreator,
-			async (req, res) => {
-				try {
-					const { contestId } = req.params
-					const { winnerId } = req.body // This is the ID from tasksCollection
-
-					const winnerTask = await tasksCollection.findOne({
-						_id: new ObjectId(winnerId),
-					})
-
-					const contest = await contestsCollection.findOne({
-						_id: new ObjectId(contestId),
-					})
-
-
-					if (!winnerTask) {
-						return res
-							.status(404)
-							.send({ message: 'Winner submission not found' })
-					}
-
-					const now = new Date()
-					const deadline = new Date(contest.deadline)
-					if (now < deadline) {
-						return res.status(400).send({
-							message: 'Contest deadline not finished yet',
-						})
-					}
-
-					// 2. IMPORTANT: Get the user's name and photo.
-					// If your tasks document doesn't have the photo,
-					// you might need to findOne from usersCollection using winnerTask.participantEmail
-					const winnerUser = await usersCollection.findOne({
-						email: winnerTask.participantEmail,
-					})
-
-					await tasksCollection.updateMany(
-						{ contestId },
-						{ $set: { isWinner: false } },
-					)
-					await tasksCollection.updateOne(
-						{ _id: new ObjectId(winnerId) },
-						{ $set: { isWinner: true } },
-					)
-
-					// 4. Update the CONTEST with winner object
-					const winnerInfo = {
-						name: winnerUser?.name || winnerTask.participantEmail,
-						photo: winnerUser?.photoURL || '',
-						email: winnerTask.participantEmail,
-					}
-
-					const result = await contestsCollection.updateOne(
-						{ _id: new ObjectId(contestId) },
-						{
-							$set: {
-								winnerDeclared: true,
-								winner: winnerInfo, // 👈 This is what the frontend needs
-							},
-						},
-					)
-
-					res.send({ message: 'Winner declared successfully', winnerInfo })
-				} catch (error) {
-					console.error(error)
-					res.status(500).send({ message: 'Internal Server Error' })
-				}
-			},
-		)
-
-		//   Filter by id
-		app.get('/contest/:id', verifyFBToken, async (req, res) => {
-			try {
-				const id = req.params.id
-				// console.log('id', id)
+				const winnerTask = await tasksCollection.findOne({
+					_id: new ObjectId(winnerId),
+				})
 
 				const contest = await contestsCollection.findOne({
-					_id: new ObjectId(id),
+					_id: new ObjectId(contestId),
 				})
 
-				if (!contest) {
-					return res.status(404).send({ message: 'Contest not found' })
+
+				if (!winnerTask) {
+					return res
+						.status(404)
+						.send({ message: 'Winner submission not found' })
 				}
 
-				res.send(contest)
-			} catch (error) {
-				console.error('Error fetching contest:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
-			}
-		})
-
-		// filter by creator email
-		app.get('/my-contests/:email', verifyFBToken, async (req, res) => {
-			try {
-				const email = req.params.email
-				const result = await contestsCollection
-					.find({ creatorEmail: email })
-					.toArray()
-
-				res.send(result)
-			} catch (error) {
-				console.error('Error fetching creator contests:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
-			}
-		})
-
-		// filter contests for user registration
-		app.get('/user-contests', verifyFBToken, async (req, res) => {
-			try {
-				const email = req.query.email
-				// console.log(email)
-				if (!email)
-					return res.status(400).send({ message: 'Email is required' })
-				const result = await paymentsCollection
-					.find({ participantEmail: email })
-					.toArray()
-				// console.log('user contests=> ', result)
-				res.send(result)
-			} catch (error) {
-				console.error('Error fetching creator contests:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
-			}
-		})
-
-		// change status by admin
-		app.patch(
-			'/contest/changeStatus/:id',
-			verifyFBToken,
-			verifyAdmin,
-			async (req, res) => {
-				try {
-					const { id } = req.params
-
-					if (!ObjectId.isValid(id)) {
-						return res.status(400).send({ message: 'Invalid Contest ID' })
-					}
-
-					const filter = { _id: new ObjectId(id) }
-					const updateDoc = { $set: req.body }
-
-					const result = await contestsCollection.updateOne(filter, updateDoc)
-
-					if (result.matchedCount === 0) {
-						return res.status(404).send({ message: 'Contest not found' })
-					}
-
-					res.send(result)
-				} catch (error) {
-					console.error('Error updating contests:', error)
-					res.status(500).send({ message: 'Internal Server Error' })
+				const now = new Date()
+				const deadline = new Date(contest.deadline)
+				if (now < deadline) {
+					return res.status(400).send({
+						message: 'Contest deadline not finished yet',
+					})
 				}
-			},
-		)
 
-		// Update already existed data
-		app.patch(`/contest/:id`, verifyFBToken, async (req, res) => {
-			try {
-				const { id } = req.params
-				const updateData = req.body
-
-				// Only update allowed fields, not participants
-				const allowedFields = [
-					'name',
-					'description',
-					'price',
-					'deadline',
-					'image',
-					'contestType',
-					'taskInstruction',
-					'prizeMoney',
-					'status',
-				]
-
-				const updateObj = {}
-				allowedFields.forEach((field) => {
-					if (updateData[field] !== undefined)
-						updateObj[field] = updateData[field]
+				// 2. IMPORTANT: Get the user's name and photo.
+				// If your tasks document doesn't have the photo,
+				// you might need to findOne from usersCollection using winnerTask.participantEmail
+				const winnerUser = await usersCollection.findOne({
+					email: winnerTask.participantEmail,
 				})
+
+				await tasksCollection.updateMany(
+					{ contestId },
+					{ $set: { isWinner: false } },
+				)
+				await tasksCollection.updateOne(
+					{ _id: new ObjectId(winnerId) },
+					{ $set: { isWinner: true } },
+				)
+
+				// 4. Update the CONTEST with winner object
+				const winnerInfo = {
+					name: winnerUser?.name || winnerTask.participantEmail,
+					photo: winnerUser?.photoURL || '',
+					email: winnerTask.participantEmail,
+				}
 
 				const result = await contestsCollection.updateOne(
-					{ _id: new ObjectId(id) },
-					{ $set: updateObj },
+					{ _id: new ObjectId(contestId) },
+					{
+						$set: {
+							winnerDeclared: true,
+							winner: winnerInfo, // 👈 This is what the frontend needs
+						},
+					},
 				)
+
+				res.send({ message: 'Winner declared successfully', winnerInfo })
+			} catch (error) {
+				console.error(error)
+				res.status(500).send({ message: 'Internal Server Error' })
+			}
+		},
+	)
+
+	//   Filter by id
+	// app.get('/contest/:id', verifyFBToken, async (req, res) => {
+	app.get('/contest/:id', async (req, res) => {
+		try {
+			const id = req.params.id
+			// console.log('id', id)
+
+			const contest = await contestsCollection.findOne({
+				_id: new ObjectId(id),
+			})
+
+			if (!contest) {
+				return res.status(404).send({ message: 'Contest not found' })
+			}
+
+			res.send(contest)
+		} catch (error) {
+			console.error('Error fetching contest:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	// filter by creator email
+	app.get('/my-contests/:email', verifyFBToken, async (req, res) => {
+		try {
+			const email = req.params.email
+			const result = await contestsCollection
+				.find({ creatorEmail: email })
+				.toArray()
+
+			res.send(result)
+		} catch (error) {
+			console.error('Error fetching creator contests:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	// filter contests for user registration
+	app.get('/user-contests', verifyFBToken, async (req, res) => {
+		try {
+			const email = req.query.email
+			// console.log(email)
+			if (!email)
+				return res.status(400).send({ message: 'Email is required' })
+			const result = await paymentsCollection
+				.find({ participantEmail: email })
+				.toArray()
+			// console.log('user contests=> ', result)
+			res.send(result)
+		} catch (error) {
+			console.error('Error fetching creator contests:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
+
+	// change status by admin
+	app.patch('/contest/changeStatus/:id',
+		verifyFBToken,
+		verifyAdmin,
+		async (req, res) => {
+			try {
+				const { id } = req.params
+
+				if (!ObjectId.isValid(id)) {
+					return res.status(400).send({ message: 'Invalid Contest ID' })
+				}
+
+				const filter = { _id: new ObjectId(id) }
+				const updateDoc = { $set: req.body }
+
+				const result = await contestsCollection.updateOne(filter, updateDoc)
+
+				if (result.matchedCount === 0) {
+					return res.status(404).send({ message: 'Contest not found' })
+				}
 
 				res.send(result)
 			} catch (error) {
 				console.error('Error updating contests:', error)
 				res.status(500).send({ message: 'Internal Server Error' })
 			}
-		})
+		},
+	)
 
-		//   Insert contest in db
-		app.post('/contest', async (req, res) => {
-			const contest = req.body
+	// Update already existed data
+	app.patch(`/contest/:id`, verifyFBToken, async (req, res) => {
+		try {
+			const { id } = req.params
+			const updateData = req.body
 
-			const query = {
-				name: contest.name,
-				creatorEmail: contest.creatorEmail,
-			}
+			// Only update allowed fields, not participants
+			const allowedFields = [
+				'name',
+				'description',
+				'price',
+				'deadline',
+				'image',
+				'contestType',
+				'taskInstruction',
+				'prizeMoney',
+				'status',
+			]
 
-			const existContest = await contestsCollection.findOne({ query })
+			const updateObj = {}
+			allowedFields.forEach((field) => {
+				if (updateData[field] !== undefined)
+					updateObj[field] = updateData[field]
+			})
 
-			if (existContest) {
-				return res.status(409).send({
-					message: 'A contest with this name already exists in your account.',
-				})
-			}
-
-			const trackingId = generateTrackingId()
-			// contest created time
-			contest.status = 'pending'
-			contest.createdAt = new Date()
-			contest.trackingId = trackingId
-			contest.participants = 0
-			logTracking(trackingId, 'contest_created')
-
-			const result = await contestsCollection.insertOne(contest)
-			res.send(result)
-		})
-
-		// delete one contests from db using id
-		app.delete('/contest/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-			try {
-				const { id } = req.params
-				// console.log(id)
-				// Make sure to import ObjectId
-				const result = await contestsCollection.deleteOne({
-					_id: new ObjectId(id),
-				})
-
-				if (result.deletedCount === 0) {
-					return res.status(404).send({ message: 'Contest not found' })
-				}
-
-				res.send({ message: 'Contest deleted successfully' })
-			} catch (error) {
-				console.error('Error deleting contest:', error)
-				res.status(500).send({ message: 'Internal Server Error' })
-			}
-		})
-
-		// -------------------- USER ROUTES --------------------
-
-		// Get all users (admin only)
-		app.get('/users', async (req, res) => {
-			const users = await usersCollection.find().toArray()
-			res.send(users)
-		})
-
-		// Update user role (admin only)
-
-		// Get single user by email 5
-		app.get('/users/:email', async (req, res) => {
-			const email = req.params.email
-			const user = await usersCollection.findOne({ email })
-			if (!user) {
-				return res.send({})
-			}
-			// console.log('user', user)
-			res.send(user)
-		})
-
-		// See user role (admin only)
-		app.get('/users/role/:email', verifyFBToken, async (req, res) => {
-			const email = req.params.email
-			const query = { email }
-			const user = await usersCollection.findOne(query)
-			// console.log("User =",user)
-			res.send({ role: user?.role })
-		})
-
-		app.patch('/users/role/:email', verifyFBToken, async (req, res) => {
-			// console.log("PATCH /users/role HIT");
-			// console.log("Params:", req.params);
-			// console.log("Body:", req.body);
-			const email = req.params.email
-			const { role } = req.body
-
-			// console.log("Email:", email, "New Role:", role);
-
-			// 1. Find the user
-			const user = await usersCollection.findOne({ email: email })
-
-			if (!user) {
-				return res.status(404).send({ message: 'User not found' })
-			}
-
-			// 2. Update the role
-			const result = await usersCollection.updateOne(
-				{ email: email },
-				{ $set: { role: role } },
+			const result = await contestsCollection.updateOne(
+				{ _id: new ObjectId(id) },
+				{ $set: updateObj },
 			)
+
 			res.send(result)
-		})
+		} catch (error) {
+			console.error('Error updating contests:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
 
-		// Create user (default role = user) 4
-		app.post('/users', async (req, res) => {
-			const user = req.body
+	//   Insert contest in db
+	app.post('/contest', async (req, res) => {
+		const contest = req.body
 
-			// Ensure every new user is user role
-			user.role = 'user'
-			user.createdAt = new Date()
+		const query = {
+			name: contest.name,
+			creatorEmail: contest.creatorEmail,
+		}
 
-			const existing = await usersCollection.findOne({ email: user.email })
-			if (existing) {
-				return res.send({ message: 'User already exists', inserted: false })
+		const existContest = await contestsCollection.findOne({ query })
+
+		if (existContest) {
+			return res.status(409).send({
+				message: 'A contest with this name already exists in your account.',
+			})
+		}
+
+		const trackingId = generateTrackingId()
+		// contest created time
+		contest.status = 'pending'
+		contest.createdAt = new Date()
+		contest.trackingId = trackingId
+		contest.participants = 0
+		logTracking(trackingId, 'contest_created')
+
+		const result = await contestsCollection.insertOne(contest)
+		res.send(result)
+	})
+
+	// delete one contests from db using id
+	app.delete('/contest/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+		try {
+			const { id } = req.params
+			// console.log(id)
+			// Make sure to import ObjectId
+			const result = await contestsCollection.deleteOne({
+				_id: new ObjectId(id),
+			})
+
+			if (result.deletedCount === 0) {
+				return res.status(404).send({ message: 'Contest not found' })
 			}
 
-			const result = await usersCollection.insertOne(user)
-			res.send(result)
-		})
+			res.send({ message: 'Contest deleted successfully' })
+		} catch (error) {
+			console.error('Error deleting contest:', error)
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
 
-		app.patch('/users/:email', verifyFBToken, async (req, res) => {
-			try {
-				const email = req.params.email
-				const data = req.body
+	// -------------------- USER ROUTES --------------------
 
-				const result = await usersCollection.updateOne(
-					{ email },
-					{ $set: data },
-				)
+	// Get all users (admin only)
+	app.get('/users', async (req, res) => {
+		const users = await usersCollection.find().toArray()
+		res.send(users)
+	})
 
-				res.send({
-					message: 'User updated successfully in Firebase and MongoDB',
-					result,
-				})
-			} catch (error) {
-				res.status(500).send({ message: 'Update failed', error: error.message })
-			}
-		})
+	// Update user role (admin only)
 
-		// app.patch("/users/:email", async (req, res) => {
-		//   const data = req.body;
-		//   console.log('data',data)
-		//   const result = await usersCollection.updateOne(
-		//     { email: req.params.email },
-		//     { $set: data },
-		//   );
+	// Get single user by email 5
+	app.get('/users/:email', async (req, res) => {
+		const email = req.params.email
+		const user = await usersCollection.findOne({ email })
+		if (!user) {
+			return res.send({})
+		}
+		// console.log('user', user)
+		res.send(user)
+	})
 
-		//   res.send(result);
-		// });
+	// See user role (admin only)
+	app.get('/users/role/:email', verifyFBToken, async (req, res) => {
+		const email = req.params.email
+		const query = { email }
+		const user = await usersCollection.findOne(query)
+		// console.log("User =",user)
+		res.send({ role: user?.role })
+	})
 
-		// Delete user (admin only) 6
+	app.patch('/users/role/:email', verifyFBToken, async (req, res) => {
+		// console.log("PATCH /users/role HIT");
+		// console.log("Params:", req.params);
+		// console.log("Body:", req.body);
+		const email = req.params.email
+		const { role } = req.body
 
-		app.delete('/users/:email', verifyFBToken, async (req, res) => {
+		// console.log("Email:", email, "New Role:", role);
+
+		// 1. Find the user
+		const user = await usersCollection.findOne({ email: email })
+
+		if (!user) {
+			return res.status(404).send({ message: 'User not found' })
+		}
+
+		// 2. Update the role
+		const result = await usersCollection.updateOne(
+			{ email: email },
+			{ $set: { role: role } },
+		)
+		res.send(result)
+	})
+
+	// Create user (default role = user) 4
+	app.post('/users', async (req, res) => {
+		const user = req.body
+
+		// Ensure every new user is user role
+		user.role = 'user'
+		user.createdAt = new Date()
+
+		const existing = await usersCollection.findOne({ email: user.email })
+		if (existing) {
+			return res.send({ message: 'User already exists', inserted: false })
+		}
+
+		const result = await usersCollection.insertOne(user)
+		res.send(result)
+	})
+
+	app.patch('/users/:email', verifyFBToken, async (req, res) => {
+		try {
 			const email = req.params.email
-			const result = await usersCollection.deleteOne({ email })
-			res.send(result)
-		})
+			const data = req.body
 
-		// -------------------- TASKS ROUTES --------------------
-		app.post('/submit-task', verifyFBToken, async (req, res) => {
-			try {
-				const { contestId, participantEmail, taskText } = req.body
+			const result = await usersCollection.updateOne(
+				{ email },
+				{ $set: data },
+			)
 
-				if (!contestId || !participantEmail || !taskText) {
-					return res.status(400).send({ message: 'Missing required fields' })
-				}
+			res.send({
+				message: 'User updated successfully in Firebase and MongoDB',
+				result,
+			})
+		} catch (error) {
+			res.status(500).send({ message: 'Update failed', error: error.message })
+		}
+	})
 
-				// Prevent duplicate submissions
-				const existingTask = await tasksCollection.findOne({
-					contestId,
-					participantEmail,
-				})
-				if (existingTask) {
-					return res.send({
-						success: true,
-						message: 'You have already submitted this task',
-						data: existingTask,
-					})
-				}
 
-				const taskData = {
-					contestId,
-					participantEmail,
-					taskText,
-					submittedAt: new Date(),
-				}
 
-				const result = await tasksCollection.insertOne(taskData)
+	// Delete user (admin only) 6
 
-				res.send({
+	app.delete('/users/:email', verifyFBToken, async (req, res) => {
+		const email = req.params.email
+		const result = await usersCollection.deleteOne({ email })
+		res.send(result)
+	})
+
+	// -------------------- TASKS ROUTES --------------------
+	app.post('/submit-task', verifyFBToken, async (req, res) => {
+		try {
+			const { contestId, participantEmail, taskText } = req.body
+
+			if (!contestId || !participantEmail || !taskText) {
+				return res.status(400).send({ message: 'Missing required fields' })
+			}
+
+			// Prevent duplicate submissions
+			const existingTask = await tasksCollection.findOne({
+				contestId,
+				participantEmail,
+			})
+			if (existingTask) {
+				return res.send({
 					success: true,
-					message: 'Task submitted successfully!',
-					data: result,
+					message: 'You have already submitted this task',
+					data: existingTask,
 				})
-			} catch (error) {
-				console.error('Task submit error:', error)
-				res.status(500).send({ message: 'Server error', error })
 			}
-		})
 
-		// Get all tasks for a specific user
-		app.get('/tasks/:email', verifyFBToken, async (req, res) => {
-			try {
-				const email = req.params.email
-
-				const userTasks = await tasksCollection
-					.find({
-						participantEmail: email,
-						isWinner: true,
-					})
-					.toArray()
-				res.send(userTasks)
-			} catch (error) {
-				console.error('Error fetching user tasks:', error)
-				res.status(500).send({ message: 'Failed to fetch tasks', error })
+			const taskData = {
+				contestId,
+				participantEmail,
+				taskText,
+				submittedAt: new Date(),
 			}
-		})
 
-		app.get('/user-all-tasks/:email', verifyFBToken, async (req, res) => {
-			try {
-				const email = req.params.email
+			const result = await tasksCollection.insertOne(taskData)
 
-				const userTasks = await tasksCollection
-					.find({
-						participantEmail: email,
-					})
-					.toArray()
+			res.send({
+				success: true,
+				message: 'Task submitted successfully!',
+				data: result,
+			})
+		} catch (error) {
+			console.error('Task submit error:', error)
+			res.status(500).send({ message: 'Server error', error })
+		}
+	})
 
-				res.send(userTasks)
-			} catch (error) {
-				console.error('Error fetching user tasks:', error)
-				res.status(500).send({ message: 'Failed to fetch tasks', error })
-			}
-		})
+	// Get all tasks for a specific user
+	app.get('/tasks/:email', verifyFBToken, async (req, res) => {
+		try {
+			const email = req.params.email
 
-		// Get recent winners
-		app.get('/winners', async (req, res) => {
-			try {
-				const limit = parseInt(req.query.limit) || 3
+			const userTasks = await tasksCollection
+				.find({
+					participantEmail: email,
+					isWinner: true,
+				})
+				.toArray()
+			res.send(userTasks)
+		} catch (error) {
+			console.error('Error fetching user tasks:', error)
+			res.status(500).send({ message: 'Failed to fetch tasks', error })
+		}
+	})
 
-				// 1. Find winner tasks
-				const winnerTasks = await tasksCollection
-					.find({ isWinner: true })
-					.sort({ submittedAt: -1 })
-					.limit(limit)
-					.toArray()
+	// Get all tasks (including non-winners) for a specific user
+	app.get('/user-all-tasks/:email', verifyFBToken, async (req, res) => {
+		try {
+			const email = req.params.email
 
-				// 2. Map over winners to attach user and contest info
-				const winnersWithDetails = await Promise.all(
-					winnerTasks.map(async (task) => {
-						// Find user info
-						const user = await usersCollection.findOne({
-							email: task.participantEmail,
-						})
-						// Find contest info
-						const contest = await contestsCollection.findOne({
-							_id: new ObjectId(task.contestId),
-						})
-
-						return {
-							participantName: user?.displayName || 'N/A',
-							participantEmail: task.participantEmail,
-							participantPhoto:
-								user?.photoURL || 'https://via.placeholder.com/150',
-							contestName: contest?.name || 'N/A',
-							contestImage: contest?.image || 'https://via.placeholder.com/300',
-							contestPrize: contest?.prizeMoney || '0',
-							taskText: task.taskText,
-							submittedAt: task.submittedAt,
-						}
-					}),
-				)
-
-				res.send(winnersWithDetails)
-			} catch (error) {
-				res.status(500).send({ message: 'Internal Server Error' })
-			}
-		})
-
-		// -------------------- PAYMENTS --------------------
-
-		app.get('/payment-status', verifyFBToken, async (req, res) => {
-			try {
-				const { contestId, email } = req.query
-				// console.log(req.query)
-
-				// contestId is stored as string in DB => no ObjectId needed
-				const exists = await paymentsCollection.findOne({
-					contestId: contestId,
+			const userTasks = await tasksCollection
+				.find({
 					participantEmail: email,
 				})
+				.toArray()
 
-				res.send({ alreadyPaid: !!exists })
-			} catch (error) {
-				res.status(500).send({ message: 'Error checking payment', error })
-			}
-		})
+			res.send(userTasks)
+		} catch (error) {
+			console.error('Error fetching user tasks:', error)
+			res.status(500).send({ message: 'Failed to fetch tasks', error })
+		}
+	})
 
-		app.post('/payment-checkout-session', async (req, res) => {
-			try {
-				const {
-					price,
-					contestId,
-					contestName,
-					contestCreatorEmail,
-					participantEmail,
-					trackingId,
-					deadline,
-					participants,
-				} = req.body
-				// console.log("Payment body", req.body)
+	// Get recent winners
+	app.get('/winners', async (req, res) => {
+		try {
+			const limit = parseInt(req.query.limit) || 3
 
-				if (!price || !contestId || !participantEmail) {
-					return res.status(400).send({ message: 'Missing required fields' })
-				}
+			// 1. Find winner tasks
+			const winnerTasks = await tasksCollection
+				.find({ isWinner: true })
+				.sort({ submittedAt: -1 })
+				.limit(limit)
+				.toArray()
 
-				const amount = parseInt(price) * 100 // cents
-
-				const session = await stripe.checkout.sessions.create({
-					payment_method_types: ['card'],
-					line_items: [
-						{
-							price_data: {
-								currency: 'usd',
-								unit_amount: amount,
-								product_data: {
-									name: `Contest: ${contestName}`,
-								},
-							},
-							quantity: 1,
-						},
-					],
-					mode: 'payment',
-					metadata: {
-						contestId,
-						contestName,
-						trackingId,
-						contestCreatorEmail,
-						deadline,
-						participants,
-					},
-
-					customer_email: participantEmail, // autofill Stripe email
-					success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}&contestId=${contestId}`,
-					cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-				})
-				// console.log('session ',session);
-
-				res.send({ url: session.url })
-			} catch (error) {
-				console.error('Stripe session error:', error)
-				res.status(500).send({ message: 'Stripe session failed', error })
-			}
-		})
-
-		app.patch('/payment-success', verifyFBToken, async (req, res) => {
-			try {
-				const sessionId = req.query.session_id
-				if (!sessionId)
-					return res.status(400).send({ message: 'Session ID missing' })
-
-				const session = await stripe.checkout.sessions.retrieve(sessionId)
-				if (!session)
-					return res.status(404).send({ message: 'Invalid session' })
-
-				const {
-					contestId,
-					contestName,
-					trackingId,
-					contestCreatorEmail,
-					deadline,
-					participants,
-				} = session.metadata
-
-				const participantEmail = session.customer_email
-				const paymentInfo = {
-					sessionId,
-					contestId,
-					contestName,
-					contestCreatorEmail,
-					trackingId,
-					participantEmail,
-					deadline,
-					participants,
-					amountPaid: session.amount_total / 100,
-					status: session.payment_status,
-					createdAt: new Date(),
-				}
-				const existingPayment = await paymentsCollection.findOne({
-					participantEmail,
-					contestId,
-				})
-
-				if (existingPayment) {
-					return res.send({
-						success: true,
-						message: 'Payment already processed',
-						paymentInfo: existingPayment,
+			// 2. Map over winners to attach user and contest info
+			const winnersWithDetails = await Promise.all(
+				winnerTasks.map(async (task) => {
+					// Find user info
+					const user = await usersCollection.findOne({
+						email: task.participantEmail,
 					})
-				}
+					// Find contest info
+					const contest = await contestsCollection.findOne({
+						_id: new ObjectId(task.contestId),
+					})
 
-				// Save payment
-				await paymentsCollection.insertOne(paymentInfo)
+					return {
+						participantName: user?.displayName || 'N/A',
+						participantEmail: task.participantEmail,
+						participantPhoto:
+							user?.photoURL || 'https://via.placeholder.com/150',
+						contestName: contest?.name || 'N/A',
+						contestImage: contest?.image || 'https://via.placeholder.com/300',
+						contestPrize: contest?.prizeMoney || '0',
+						taskText: task.taskText,
+						submittedAt: task.submittedAt,
+					}
+				}),
+			)
 
-				// Update participants count
-				await contestsCollection.updateOne(
-					{ _id: new ObjectId(contestId) },
-					{ $inc: { participants: 1 } },
-				)
+			res.send(winnersWithDetails)
+		} catch (error) {
+			res.status(500).send({ message: 'Internal Server Error' })
+		}
+	})
 
-				const contestData = await contestsCollection.findOne({
-					_id: new ObjectId(contestId),
+	// Get all winners with pagination
+	app.get('/all-winners', verifyFBToken, async (req, res) => {
+		try {
+			const page = parseInt(req.query.page) || 1;
+			const limit = parseInt(req.query.limit) || 12; // Show 12 winners per page
+			const skip = (page - 1) * limit;
+
+			const totalWinners = await tasksCollection.countDocuments({ isWinner: true });
+
+			const winnerTasks = await tasksCollection
+				.find({ isWinner: true })
+				.sort({ submittedAt: -1 })
+				.skip(skip)
+				.limit(limit)
+				.toArray();
+
+			const winnersWithDetails = await Promise.all(
+				winnerTasks.map(async (task) => {
+					const user = await usersCollection.findOne({ email: task.participantEmail });
+					const contest = await contestsCollection.findOne({ _id: new ObjectId(task.contestId) });
+
+					return {
+						_id: task._id,
+						participantName: user?.displayName || 'Unknown Creator',
+						participantEmail: task.participantEmail,
+						participantPhoto: user?.photoURL || 'https://i.ibb.co/PNG-placeholder.png',
+						contestName: contest?.contestName || 'N/A',
+						contestPrize: contest?.prizeMoney || '0',
+						submittedAt: task.submittedAt,
+					}
 				})
+			);
 
-				// Send response with contest data
-				res.send({
-					success: true,
-					message: 'Payment verified successfully',
-					paymentInfo,
-					contest: contestData, // <-- THIS FIXES YOUR FRONTEND
-				})
-			} catch (error) {
-				console.error('Payment verification error:', error)
-				res.status(500).send({ message: 'Server error', error })
+			res.send({
+				winners: winnersWithDetails,
+				totalWinners,
+				totalPages: Math.ceil(totalWinners / limit),
+				currentPage: page
+			});
+		} catch (error) {
+			res.status(500).send({ message: 'Internal Server Error' });
+		}
+	});
+
+
+
+	// -------------------- Dashboard --------------------
+
+	app.get("/dashboard/contest-summary", async (req, res) => {
+		try {
+			const data = await contestsCollection.aggregate([
+				{
+					$group: {
+						_id: "$contestType",
+						totalContests: { $sum: 1 },
+						totalParticipants: { $sum: "$participants" },
+						contests: {
+							$push: {
+								name: "$name",
+								participants: "$participants",
+								prizeMoney: "$prizeMoney",
+							},
+						},
+					},
+				},
+				{ $sort: { totalParticipants: -1 } },
+			]).toArray();
+
+			res.send(data);
+		} catch (error) {
+			console.error(error);
+			res.status(500).send({ message: "Internal Server Error" });
+		}
+	});
+
+	// summary
+
+	// -------------------- Dashboard Summary --------------------
+	app.get("/dashboard/summary", async (req, res) => {
+		try {
+			// Total users
+			const totalUsers = await usersCollection.countDocuments();
+
+			// Total contests
+			const totalContests = await contestsCollection.countDocuments();
+
+			// Total participants (sum of participants field in all contests)
+			const participantData = await contestsCollection
+				.aggregate([
+					{
+						$group: {
+							_id: null,
+							totalParticipants: { $sum: "$participants" },
+						},
+					},
+				])
+				.toArray();
+
+			const totalParticipants = participantData[0]?.totalParticipants || 0;
+
+			// ✅ TOTAL REVENUE (ONLY SUCCESS PAYMENTS)
+			const revenueAgg = await paymentsCollection.aggregate([
+				{ $match: { status: "paid" } },
+				{
+					$group: {
+						_id: null,
+						totalRevenue: { $sum: "$amountPaid" },
+					},
+				},
+			]).toArray();
+
+
+			const totalRevenue = revenueAgg[0]?.totalRevenue || 0;
+
+			// Send summary
+			res.send({
+				totalUsers,
+				totalContests,
+				totalParticipants,
+				totalRevenue,
+			});
+
+
+		} catch (error) {
+			console.error("Dashboard summary error:", error);
+			res.status(500).send({ message: "Internal Server Error" });
+		}
+	});
+
+
+
+	// -------------------- PAYMENTS --------------------
+
+	app.get('/payment-status', verifyFBToken, async (req, res) => {
+		try {
+			const { contestId, email } = req.query
+			// console.log(req.query)
+
+			// contestId is stored as string in DB => no ObjectId needed
+			const exists = await paymentsCollection.findOne({
+				contestId: contestId,
+				participantEmail: email,
+			})
+
+			res.send({ alreadyPaid: !!exists })
+		} catch (error) {
+			res.status(500).send({ message: 'Error checking payment', error })
+		}
+	})
+
+	app.post('/payment-checkout-session', async (req, res) => {
+		try {
+			const {
+				price,
+				contestId,
+				contestName,
+				contestCreatorEmail,
+				participantEmail,
+				trackingId,
+				deadline,
+				participants,
+			} = req.body
+			// console.log("Payment body", req.body)
+
+			if (!price || !contestId || !participantEmail) {
+				return res.status(400).send({ message: 'Missing required fields' })
 			}
-		})
 
-		// Send a ping to confirm a successful connection
-		// await client.db("admin").command({ ping: 1 });
-		console.log(
-			'Pinged your deployment. You successfully connected to MongoDB!',
-		)
-	} finally {
-	}
+			const amount = parseInt(price) * 100 // cents
+
+			const session = await stripe.checkout.sessions.create({
+				payment_method_types: ['card'],
+				line_items: [
+					{
+						price_data: {
+							currency: 'usd',
+							unit_amount: amount,
+							product_data: {
+								name: `Contest: ${contestName}`,
+							},
+						},
+						quantity: 1,
+					},
+				],
+				mode: 'payment',
+				metadata: {
+					contestId,
+					contestName,
+					trackingId,
+					contestCreatorEmail,
+					deadline,
+					participants,
+				},
+
+				customer_email: participantEmail, // autofill Stripe email
+				success_url: `${SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}&contestId=${contestId}`,
+				cancel_url: `${SITE_DOMAIN}/dashboard/payment-cancelled`,
+			})
+
+			res.send({ url: session.url })
+		} catch (error) {
+			console.error('Stripe session error:', error)
+			res.status(500).send({ message: 'Stripe session failed', error })
+		}
+	})
+
+	app.patch('/payment-success', verifyFBToken, async (req, res) => {
+		try {
+			const sessionId = req.query.session_id
+			if (!sessionId)
+				return res.status(400).send({ message: 'Session ID missing' })
+
+			const session = await stripe.checkout.sessions.retrieve(sessionId)
+			if (!session)
+				return res.status(404).send({ message: 'Invalid session' })
+
+			const {
+				contestId,
+				contestName,
+				trackingId,
+				contestCreatorEmail,
+				deadline,
+				participants,
+			} = session.metadata
+
+			const participantEmail = session.customer_email
+			const paymentInfo = {
+				sessionId,
+				contestId,
+				contestName,
+				contestCreatorEmail,
+				trackingId,
+				participantEmail,
+				deadline,
+				participants,
+				amountPaid: session.amount_total / 100,
+				status: session.payment_status,
+				createdAt: new Date(),
+			}
+			const existingPayment = await paymentsCollection.findOne({
+				participantEmail,
+				contestId,
+			})
+
+			if (existingPayment) {
+				return res.send({
+					success: true,
+					message: 'Payment already processed',
+					paymentInfo: existingPayment,
+				})
+			}
+
+			// Save payment
+			await paymentsCollection.insertOne(paymentInfo)
+
+			// Update participants count
+			await contestsCollection.updateOne(
+				{ _id: new ObjectId(contestId) },
+				{ $inc: { participants: 1 } },
+			)
+
+			const contestData = await contestsCollection.findOne({
+				_id: new ObjectId(contestId),
+			})
+
+			// Send response with contest data
+			res.send({
+				success: true,
+				message: 'Payment verified successfully',
+				paymentInfo,
+				contest: contestData, // <-- THIS FIXES YOUR FRONTEND
+			})
+		} catch (error) {
+			console.error('Payment verification error:', error)
+			res.status(500).send({ message: 'Server error', error })
+		}
+	})
+
+
+	// Send a ping to confirm a successful connection
+	// await client.db("admin").command({ ping: 1 });
+	console.log(
+		'Pinged your deployment. You successfully connected to MongoDB!',
+	)
 }
+
 run().catch(console.dir)
 
 app.get('/', (req, res) => {
